@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"strings"
@@ -24,6 +25,30 @@ var configFile string
 
 func init() {
 	flag.StringVar(&configFile, "config", "config.json", "location of config file to be used")
+}
+
+type mute struct {
+	dggchat.Mute
+}
+
+type unmute struct {
+	dggchat.Mute
+}
+
+type ban struct {
+	dggchat.Ban
+}
+
+type unban struct {
+	dggchat.Ban
+}
+
+type joinAction struct {
+	dggchat.RoomAction
+}
+
+type quitAction struct {
+	dggchat.RoomAction
 }
 
 func main() {
@@ -96,50 +121,40 @@ func main() {
 		log.Panicln(err)
 	}
 
-	messages := make(chan dggchat.Message)
-	errors := make(chan string)
-	pings := make(chan dggchat.Ping)
-	mutes := make(chan dggchat.Mute)
-	unmutes := make(chan dggchat.Mute)
-	bans := make(chan dggchat.Ban)
-	unbans := make(chan dggchat.Ban)
-	joins := make(chan dggchat.RoomAction)
-	quits := make(chan dggchat.RoomAction)
-	subonly := make(chan dggchat.SubOnly)
-	broadcasts := make(chan dggchat.Broadcast)
+	events := make(chan interface{}, 100)
 
 	chat.Session.AddMessageHandler(func(m dggchat.Message, s *dggchat.Session) {
-		messages <- m
+		events <- m
 	})
 	chat.Session.AddErrorHandler(func(e string, s *dggchat.Session) {
-		errors <- e
+		events <- fmt.Errorf(e)
 	})
 	chat.Session.AddMuteHandler(func(m dggchat.Mute, s *dggchat.Session) {
-		mutes <- m
+		events <- mute{m}
 	})
 	chat.Session.AddUnmuteHandler(func(m dggchat.Mute, s *dggchat.Session) {
-		unmutes <- m
+		events <- unmute{m}
 	})
 	chat.Session.AddBanHandler(func(b dggchat.Ban, s *dggchat.Session) {
-		bans <- b
+		events <- ban{b}
 	})
 	chat.Session.AddUnbanHandler(func(b dggchat.Ban, s *dggchat.Session) {
-		unbans <- b
+		events <- unban{b}
 	})
 	chat.Session.AddJoinHandler(func(r dggchat.RoomAction, s *dggchat.Session) {
-		joins <- r
+		events <- joinAction{r}
 	})
 	chat.Session.AddQuitHandler(func(r dggchat.RoomAction, s *dggchat.Session) {
-		quits <- r
+		events <- quitAction{r}
 	})
 	chat.Session.AddSubOnlyHandler(func(so dggchat.SubOnly, s *dggchat.Session) {
-		subonly <- so
+		events <- so
 	})
 	chat.Session.AddBroadcastHandler(func(b dggchat.Broadcast, s *dggchat.Session) {
-		broadcasts <- b
+		events <- b
 	})
 	chat.Session.AddPingHandler(func(p dggchat.Ping, s *dggchat.Session) {
-		pings <- p
+		events <- p
 	})
 
 	err = chat.Session.Open()
@@ -162,35 +177,36 @@ func main() {
 
 	go func() { //TODO
 		for {
-			select {
-			case m := <-messages:
-				chat.renderMessage(m)
-			case e := <-errors:
-				chat.renderError(e)
-			case p := <-pings:
-				_ = p.Timestamp //TODO
-			case m := <-mutes:
-				chat.renderMute(m)
-			case m := <-unmutes:
-				chat.renderUnmute(m)
-			case b := <-bans:
-				chat.renderBan(b)
-			case b := <-unbans:
-				chat.renderUnban(b)
-			case j := <-joins:
+			event := <-events
+			switch event.(type) {
+			case dggchat.Message:
+				chat.renderMessage(event.(dggchat.Message))
+			case error:
+				chat.renderError(event.(error).Error())
+			case dggchat.Ping:
+				_ = event.(dggchat.Ping).Timestamp //TODO
+			case mute:
+				chat.renderMute(event.(mute).Mute)
+			case unmute:
+				chat.renderUnmute(event.(unmute).Mute)
+			case ban:
+				chat.renderBan(event.(ban).Ban)
+			case unban:
+				chat.renderUnban(event.(unban).Ban)
+			case joinAction:
 				if chat.config.ShowJoinLeave {
-					chat.renderJoin(j)
+					chat.renderJoin(event.(joinAction).RoomAction)
 				}
 				chat.renderUsers(chat.Session.GetUsers())
-			case j := <-quits:
+			case quitAction:
 				if chat.config.ShowJoinLeave {
-					chat.renderQuit(j)
+					chat.renderQuit(event.(quitAction).RoomAction)
 				}
 				chat.renderUsers(chat.Session.GetUsers())
-			case so := <-subonly:
-				chat.renderSubOnly(so)
-			case b := <-broadcasts:
-				chat.renderBroadcast(b)
+			case dggchat.SubOnly:
+				chat.renderSubOnly(event.(dggchat.SubOnly))
+			case dggchat.Broadcast:
+				chat.renderBroadcast(event.(dggchat.Broadcast))
 			}
 		}
 	}()
